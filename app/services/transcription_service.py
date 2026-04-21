@@ -1,5 +1,10 @@
 import json
+import os
+import subprocess
+import tempfile
 import threading
+import uuid
+from pathlib import Path
 from typing import Any
 
 import azure.cognitiveservices.speech as speechsdk
@@ -7,6 +12,128 @@ from fastapi import HTTPException
 
 from app.config import DEFAULT_LANGUAGE, require_env
 from app.schemas import TranscribeResponse, TranscriptionWord
+
+
+class UnsupportedAudioMediaError(Exception):
+    pass
+
+
+def _sdk_media_type_error() -> HTTPException:
+    return HTTPException(
+        status_code=415,
+        detail=(
+            "Unsupported or invalid audio media format. "
+            "Supported: WAV (PCM), MP3, OGG/Opus, AAC/M4A. "
+            "Ensure the file is a valid audio file and not corrupted."
+        ),
+    )
+
+
+def _server_error(message: str) -> HTTPException:
+    return HTTPException(status_code=500, detail=message)
+
+
+def _is_media_runtime_error(exc: RuntimeError) -> bool:
+    detail = str(exc).lower()
+    return (
+        "audio" in detail
+        and (
+            "format" in detail
+            or "codec" in detail
+            or "header" in detail
+            or "unsupported" in detail
+        )
+    )
+
+
+def _ffmpeg_convert_to_wav(input_path: str) -> str | None:
+    """Convert any audio file to 16 kHz / 16-bit / mono PCM WAV using ffmpeg.
+
+    Returns the path of the new WAV file, or None if conversion fails.
+    The caller is responsible for deleting the returned file.
+    """
+    out_path = os.path.join(tempfile.gettempdir(), f"converted-{uuid.uuid4().hex}.wav")
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", input_path,
+                "-ar", "16000",
+                "-ac", "1",
+                "-acodec", "pcm_s16le",
+                out_path,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode == 0 and Path(out_path).stat().st_size > 0:
+            return out_path
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    try:
+        os.remove(out_path)
+    except OSError:
+        pass
+    return None
+
+
+def _resolve_container_format(
+    suffix: str,
+    content_type: str | None,
+) -> speechsdk.audio.AudioStreamContainerFormat | None:
+    normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
+
+    # WAV stays on file-based AudioConfig for reliable PCM autodetection.
+    if suffix == ".wav" or normalized_type in {"audio/wav", "audio/x-wav", "audio/wave"}:
+        return None
+
+    mime_map = {
+        "audio/mpeg": speechsdk.audio.AudioStreamContainerFormat.MP3,
+        "audio/mp3": speechsdk.audio.AudioStreamContainerFormat.MP3,
+        "audio/ogg": speechsdk.audio.AudioStreamContainerFormat.OGG_OPUS,
+        "audio/opus": speechsdk.audio.AudioStreamContainerFormat.OGG_OPUS,
+        "application/ogg": speechsdk.audio.AudioStreamContainerFormat.OGG_OPUS,
+        "audio/aac": speechsdk.audio.AudioStreamContainerFormat.ANY,
+        "audio/mp4": speechsdk.audio.AudioStreamContainerFormat.ANY,
+        "audio/mp4a-latm": speechsdk.audio.AudioStreamContainerFormat.ANY,
+        "audio/x-m4a": speechsdk.audio.AudioStreamContainerFormat.ANY,
+    }
+    if normalized_type in mime_map:
+        return mime_map[normalized_type]
+
+    extension_map = {
+        ".mp3": speechsdk.audio.AudioStreamContainerFormat.MP3,
+        ".ogg": speechsdk.audio.AudioStreamContainerFormat.OGG_OPUS,
+        ".opus": speechsdk.audio.AudioStreamContainerFormat.OGG_OPUS,
+        ".aac": speechsdk.audio.AudioStreamContainerFormat.ANY,
+        ".m4a": speechsdk.audio.AudioStreamContainerFormat.ANY,
+    }
+    if suffix in extension_map:
+        return extension_map[suffix]
+
+    raise UnsupportedAudioMediaError()
+
+
+def _create_audio_config(
+    file_path: str,
+    content_type: str | None,
+) -> tuple[speechsdk.audio.AudioConfig, Any | None]:
+    suffix = Path(file_path).suffix.lower()
+
+    container = _resolve_container_format(suffix=suffix, content_type=content_type)
+    if container is None:
+        return speechsdk.audio.AudioConfig(filename=file_path), None
+
+    try:
+        compressed_format = speechsdk.audio.AudioStreamFormat(compressed_stream_format=container)
+        push_stream = speechsdk.audio.PushAudioInputStream(stream_format=compressed_format)
+        with open(file_path, "rb") as audio_file:
+            push_stream.write(audio_file.read())
+        # Keep stream open until recognition finishes.
+        return speechsdk.audio.AudioConfig(stream=push_stream), push_stream
+    except RuntimeError as exc:
+        raise UnsupportedAudioMediaError() from exc
 
 
 class _RecognitionAccumulator:
@@ -66,25 +193,35 @@ class _RecognitionAccumulator:
         )
 
 
-def transcribe_file_with_sdk(file_path: str, language: str = DEFAULT_LANGUAGE) -> TranscribeResponse:
+def _run_recognition(
+    speech_config: speechsdk.SpeechConfig,
+    audio_path: str,
+    content_type: str | None,
+    language: str,
+) -> TranscribeResponse:
+    """Build an audio config, create a recognizer, and run continuous recognition."""
+    _stream_handle = None
     try:
-        speech_key = require_env("AZURE_SPEECH_KEY")
-        speech_region = require_env("AZURE_SPEECH_REGION")
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        audio_config, _stream_handle = _create_audio_config(audio_path, content_type=content_type)
+    except UnsupportedAudioMediaError as exc:
+        raise _sdk_media_type_error() from exc
+    except RuntimeError as exc:
+        raise _sdk_media_type_error() from exc
 
-    speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
-    speech_config.speech_recognition_language = language
-    speech_config.request_word_level_timestamps()
-    speech_config.output_format = speechsdk.OutputFormat.Detailed
-
-    recognizer = speechsdk.SpeechRecognizer(
-        speech_config=speech_config,
-        audio_config=speechsdk.audio.AudioConfig(filename=file_path),
-    )
+    is_compressed = _stream_handle is not None
+    try:
+        recognizer = speechsdk.SpeechRecognizer(
+            speech_config=speech_config,
+            audio_config=audio_config,
+        )
+    except RuntimeError as exc:
+        if is_compressed or _is_media_runtime_error(exc):
+            raise _sdk_media_type_error() from exc
+        raise _server_error("Failed to initialize Azure Speech recognizer.") from exc
 
     done_event = threading.Event()
     collector = _RecognitionAccumulator(default_language=language)
+    recognition_error: dict[str, str] = {}
 
     def recognized(event: Any) -> None:
         if event.result.reason != speechsdk.ResultReason.RecognizedSpeech:
@@ -96,14 +233,77 @@ def transcribe_file_with_sdk(file_path: str, language: str = DEFAULT_LANGUAGE) -
                 collector.transcript_chunks.append(event.result.text)
 
     def stop_callback(event: Any) -> None:
+        if getattr(event, "reason", None) == speechsdk.CancellationReason.Error:
+            details = (getattr(event, "error_details", None) or "").strip()
+            if details:
+                recognition_error["detail"] = details
         done_event.set()
 
     recognizer.recognized.connect(recognized)
     recognizer.session_stopped.connect(stop_callback)
     recognizer.canceled.connect(stop_callback)
 
-    recognizer.start_continuous_recognition()
+    try:
+        recognizer.start_continuous_recognition()
+    except RuntimeError as exc:
+        raise _server_error("Azure Speech recognition failed to start.") from exc
+
     done_event.wait()
     recognizer.stop_continuous_recognition()
+    if _stream_handle is not None:
+        _stream_handle.close()
+
+    if recognition_error:
+        detail = recognition_error["detail"]
+        detail_lower = detail.lower()
+        if "audio" in detail_lower and (
+            "format" in detail_lower
+            or "header" in detail_lower
+            or "codec" in detail_lower
+            or "unsupported" in detail_lower
+        ):
+            raise _sdk_media_type_error()
+        raise _server_error(f"Azure Speech recognition canceled: {detail}")
 
     return collector.build_response()
+
+
+def transcribe_file_with_sdk(
+    file_path: str,
+    language: str = DEFAULT_LANGUAGE,
+    content_type: str | None = None,
+) -> TranscribeResponse:
+    try:
+        speech_key = require_env("AZURE_SPEECH_KEY")
+        speech_region = require_env("AZURE_SPEECH_REGION")
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
+    speech_config.speech_recognition_language = language
+    speech_config.request_word_level_timestamps()
+    speech_config.output_format = speechsdk.OutputFormat.Detailed
+
+    suffix = Path(file_path).suffix.lower()
+    is_wav = suffix == ".wav" or (content_type or "").lower() in {
+        "audio/wav", "audio/x-wav", "audio/wave"
+    }
+
+    # For WAV, go directly to the SDK — no conversion needed.
+    if is_wav:
+        return _run_recognition(speech_config, file_path, content_type, language)
+
+    # For all other formats, first attempt an ffmpeg → WAV conversion so that
+    # the SDK can use its reliable PCM path regardless of GStreamer availability.
+    converted_path = _ffmpeg_convert_to_wav(file_path)
+    if converted_path is not None:
+        try:
+            return _run_recognition(speech_config, converted_path, "audio/wav", language)
+        finally:
+            try:
+                os.remove(converted_path)
+            except OSError:
+                pass
+
+    # ffmpeg unavailable or conversion failed — fall back to SDK compressed stream.
+    return _run_recognition(speech_config, file_path, content_type, language)

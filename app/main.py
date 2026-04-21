@@ -1,7 +1,10 @@
+import gradio as gr
+import uvicorn
 from fastapi import FastAPI, File, Form, Query, UploadFile
 from fastapi.responses import Response
 
-from app.config import DEFAULT_TTS_VOICE
+from app.config import DEFAULT_TTS_VOICE, PORT
+from app.gradio_app import gradio_app
 from app.schemas import AnalyzeRequest, ProcessResponse, TranscribeResponse
 from app.services.audio_service import cleanup_temp_file, save_upload_to_temp, validate_audio_file
 from app.services.language_service import analyze_text
@@ -10,6 +13,9 @@ from app.services.transcription_service import transcribe_file_with_sdk
 from app.services.tts_service import get_voices, synthesize_speech_base64, synthesize_speech_bytes
 
 app = FastAPI(title="Cloud Speech Project API", version="1.0.0")
+
+# Mount the Gradio UI at /ui  (visit http://localhost:8000/ui in your browser)
+app = gr.mount_gradio_app(app, gradio_app, path="/ui")
 
 
 @app.get("/health")
@@ -23,7 +29,7 @@ async def transcribe(audio: UploadFile = File(...)) -> TranscribeResponse:
     temp_path = await save_upload_to_temp(audio, validation.suffix)
 
     try:
-        return transcribe_file_with_sdk(temp_path)
+        return transcribe_file_with_sdk(temp_path, content_type=audio.content_type)
     finally:
         cleanup_temp_file(temp_path)
 
@@ -42,7 +48,7 @@ async def process(
     temp_path = await save_upload_to_temp(audio, validation.suffix)
 
     try:
-        transcription = transcribe_file_with_sdk(temp_path)
+        transcription = transcribe_file_with_sdk(temp_path, content_type=audio.content_type)
         analysis = analyze_text(transcription.transcript)
         summary = build_summary_text(analysis)
         tts_payload = synthesize_speech_base64(summary, voice)
@@ -75,3 +81,7 @@ def summary_audio(
 ) -> Response:
     _, audio_bytes = synthesize_speech_bytes(text=text, voice=voice)
     return Response(content=audio_bytes, media_type="audio/mpeg")
+
+
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="0.0.0.0", port=PORT)

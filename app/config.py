@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+PORT = int(os.getenv("WEBSITES_PORT", "8000"))
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 DEFAULT_LANGUAGE = "en-US"
 DEFAULT_TTS_VOICE = "en-US-JennyNeural"

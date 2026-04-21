@@ -1,3 +1,7 @@
 .env
 __pycache__/
 .vscode/
+.pytest_cache/
+tests/__pycache__/
+*.pyc
+
