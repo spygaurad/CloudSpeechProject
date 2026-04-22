@@ -1,3 +1,12 @@
+# Application Insights MUST be initialized before any Azure SDK imports
+from dotenv import load_dotenv
+load_dotenv()  # load .env before everything else
+
+from telemetry import init_telemetry
+init_telemetry()  # initialize before FastAPI or any Azure SDK imports
+
+import time
+
 import gradio as gr
 import uvicorn
 from fastapi import FastAPI, File, Form, Query, UploadFile
@@ -9,6 +18,7 @@ from app.schemas import AnalyzeRequest, ProcessResponse, TranscribeResponse
 from app.services.audio_service import cleanup_temp_file, save_upload_to_temp, validate_audio_file
 from app.services.language_service import analyze_text
 from app.services.summary_service import build_summary_text
+from app.metrics import emit_pipeline_metrics
 from app.services.stats_service import get_stats, log_transcription  # noqa: F401 (init_db runs on import)
 from app.services.transcription_service import transcribe_file_with_sdk, transcribe_with_confidence_retry
 from app.services.tts_service import get_voices, synthesize_speech_base64, synthesize_speech_bytes
@@ -54,9 +64,12 @@ async def process(
     temp_path = await save_upload_to_temp(audio, validation.suffix)
 
     try:
+        t0 = time.perf_counter()
         transcription, retry_attempted, retry_language = transcribe_with_confidence_retry(
             temp_path, content_type=audio.content_type
         )
+        stt_ms = (time.perf_counter() - t0) * 1000
+
         log_transcription(
             language=transcription.language,
             overall_confidence=transcription.confidence,
@@ -66,9 +79,24 @@ async def process(
             retry_language=retry_language,
             final_confidence=transcription.confidence if retry_attempted else None,
         )
+
+        t1 = time.perf_counter()
         analysis = analyze_text(transcription.transcript)
+        language_ms = (time.perf_counter() - t1) * 1000
+
         summary = build_summary_text(analysis)
+
+        t2 = time.perf_counter()
         tts_payload = synthesize_speech_base64(summary, voice)
+        tts_ms = (time.perf_counter() - t2) * 1000
+
+        emit_pipeline_metrics(
+            stt_result=transcription,
+            language_result=analysis,
+            tts_char_count=len(summary),
+            stage_timings={"stt_ms": stt_ms, "language_ms": language_ms, "tts_ms": tts_ms},
+            audio_format=validation.suffix,
+        )
 
         if validation.partial_support:
             analysis["audio_format_note"] = (
