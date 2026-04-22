@@ -10,7 +10,13 @@ from typing import Any
 import azure.cognitiveservices.speech as speechsdk
 from fastapi import HTTPException
 
-from app.config import DEFAULT_LANGUAGE, require_env
+from app.config import (
+    DEFAULT_LANGUAGE,
+    LOW_WORD_CONFIDENCE_THRESHOLD,
+    RETRY_CONFIDENCE_THRESHOLD,
+    RETRY_LANGUAGE,
+    require_env,
+)
 from app.schemas import TranscribeResponse, TranscriptionWord
 
 
@@ -307,3 +313,45 @@ def transcribe_file_with_sdk(
 
     # ffmpeg unavailable or conversion failed — fall back to SDK compressed stream.
     return _run_recognition(speech_config, file_path, content_type, language)
+
+
+def _flag_low_confidence_words(result: TranscribeResponse) -> TranscribeResponse:
+    """Annotate result.low_confidence_words with texts below threshold."""
+    flagged = [
+        w.word
+        for w in result.words
+        if isinstance(w.confidence, float) and w.confidence < LOW_WORD_CONFIDENCE_THRESHOLD
+    ]
+    return result.model_copy(update={"low_confidence_words": flagged})
+
+
+def transcribe_with_confidence_retry(
+    file_path: str,
+    content_type: str | None = None,
+) -> tuple[TranscribeResponse, bool, str | None]:
+    """
+    Run transcription with automatic confidence-based retry.
+
+    Returns:
+        (best_result, retry_attempted, retry_language_used)
+    """
+    first = transcribe_file_with_sdk(file_path, language=DEFAULT_LANGUAGE, content_type=content_type)
+    first = _flag_low_confidence_words(first)
+
+    retry_attempted = False
+    retry_language: str | None = None
+
+    if first.confidence is not None and first.confidence < RETRY_CONFIDENCE_THRESHOLD:
+        retry_attempted = True
+        retry_language = RETRY_LANGUAGE
+        second = transcribe_file_with_sdk(file_path, language=RETRY_LANGUAGE, content_type=content_type)
+        second = _flag_low_confidence_words(second)
+
+        # Keep whichever attempt scored higher
+        first_conf = first.confidence or 0.0
+        second_conf = second.confidence or 0.0
+        best = second if second_conf > first_conf else first
+        best = best.model_copy(update={"retry_attempted": True})
+        return best, retry_attempted, retry_language
+
+    return first, retry_attempted, retry_language

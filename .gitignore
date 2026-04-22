@@ -4,4 +4,6 @@ __pycache__/
 .pytest_cache/
 tests/__pycache__/
 *.pyc
+transcription_stats.db
+.azure
 

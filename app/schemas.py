@@ -15,6 +15,8 @@ class TranscribeResponse(BaseModel):
     language: str
     confidence: float | None = None
     words: list[TranscriptionWord]
+    low_confidence_words: list[str] = []   # word texts with confidence < threshold
+    retry_attempted: bool = False
 
 
 class VoiceInfo(BaseModel):
