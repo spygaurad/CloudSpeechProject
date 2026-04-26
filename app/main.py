@@ -19,6 +19,7 @@ from app.metrics import emit_pipeline_event, emit_pipeline_metrics, timed_stage,
 from app.services.stats_service import get_stats, log_transcription  # noqa: F401 (init_db runs on import)
 from app.services.transcription_service import transcribe_file_with_sdk, transcribe_with_confidence_retry
 from app.services.tts_service import get_voices, synthesize_speech_base64, synthesize_speech_bytes
+from app.telemetry_log import log_pipeline_call, get_telemetry_summary, clear_log
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -108,9 +109,18 @@ async def process(
                     tts_span.set_attribute("duration_ms", tts_ms)
 
                 emit_pipeline_metrics(
-                    stt_result=transcription,
-                    language_result=analysis,
-                    tts_char_count=len(summary),
+                    stt_result={
+                        "confidence": transcription.confidence or 0.0,
+                        "duration_seconds": 0.0,  # Not available from Azure Speech SDK
+                        "transcript": transcription.transcript,
+                        "language": transcription.language,
+                    },
+                    language_result={
+                        "entities": analysis.get("named_entities", []),
+                        "key_phrases": analysis.get("key_phrases", []),
+                        "sentiment": analysis.get("sentiment", {"label": "neutral"}),
+                    },
+                    tts_result={"char_count": len(summary)},
                     stage_timings={"stt_ms": stt_ms, "language_ms": language_ms, "tts_ms": tts_ms},
                     audio_format=validation.suffix,
                 )
@@ -119,6 +129,21 @@ async def process(
                     success=True,
                     stt_result=transcription,
                     lang_result=analysis,
+                )
+
+                # Log to session telemetry (for /telemetry-summary endpoint)
+                log_pipeline_call(
+                    stt_result={
+                        "confidence": transcription.confidence or 0.0,
+                        "language": transcription.language,
+                        "transcript": transcription.transcript,
+                    },
+                    lang_result={
+                        "entities": analysis.get("named_entities", []),
+                        "key_phrases": analysis.get("key_phrases", []),
+                        "sentiment": analysis.get("sentiment", {"label": "neutral"}),
+                    },
+                    stage_timings={"stt_ms": stt_ms, "language_ms": language_ms, "tts_ms": tts_ms},
                 )
 
                 if validation.partial_support:
@@ -156,6 +181,12 @@ def stats() -> dict:
 @app.get("/voices")
 def voices() -> dict:
     return {"voices": get_voices()}
+
+
+@app.get("/telemetry-summary")
+def telemetry_summary() -> dict:
+    """Return in-memory session telemetry summary (no Azure Portal needed)."""
+    return get_telemetry_summary()
 
 
 @app.get("/summary-audio")

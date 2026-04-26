@@ -41,6 +41,14 @@ stage_stt_hist = meter.create_histogram("stage_stt_ms")
 stage_language_hist = meter.create_histogram("stage_language_ms")
 stage_tts_hist = meter.create_histogram("stage_tts_ms")
 
+# Metrics as histograms (for guaranteed export to customMetrics)
+stt_confidence_hist = meter.create_histogram("stt_confidence")
+entity_count_hist = meter.create_histogram("entity_count")
+keyphrase_count_hist = meter.create_histogram("keyphrase_count")
+sentiment_hist = meter.create_histogram("sentiment")
+tts_char_count_hist = meter.create_histogram("tts_char_count")
+stt_word_count_hist = meter.create_histogram("stt_word_count")
+
 # ---------------------------------------------------------------------------
 # Sentiment mapping
 # ---------------------------------------------------------------------------
@@ -55,43 +63,55 @@ _SENTIMENT_MAP: dict[str, float] = {
 # Emit function — call once at the end of every successful /process request
 # ---------------------------------------------------------------------------
 def emit_pipeline_metrics(
-    stt_result: TranscribeResponse,
+    stt_result: dict,
     language_result: dict,
-    tts_char_count: int,
+    tts_result: dict,
     stage_timings: dict[str, float],
     audio_format: str,
 ) -> None:
-    """Emit custom metrics for all three pipeline stages.
+    """Call this at the end of /process after all three stages complete.
 
     Args:
-        stt_result:      TranscribeResponse returned by the STT stage.
-        language_result: dict returned by analyze_text().
-        tts_char_count:  Number of characters synthesized by TTS (len of summary text).
+        stt_result:      dict with keys: confidence, duration_seconds, transcript, language
+        language_result: dict with keys: entities, key_phrases, sentiment
+        tts_result:      dict with key: char_count
         stage_timings:   {"stt_ms": float, "language_ms": float, "tts_ms": float}
         audio_format:    File extension of the uploaded audio (e.g. ".wav").
     """
     attrs: dict[str, str] = {
         "audio_format": audio_format,
-        "language": stt_result.language,
+        "language": stt_result["language"],
     }
 
-    # --- STT metrics ---
-    stt_confidence_gauge.set(stt_result.confidence or 0.0, attrs)
-    # duration_seconds: the Azure Speech SDK does not surface clip duration in the
-    # current TranscribeResponse schema; emitted as 0.0 until the schema is extended.
-    stt_duration_gauge.set(0.0, attrs)
-    stt_word_count_gauge.set(len(stt_result.transcript.split()), attrs)
+    # --- STT metrics (gauges + histograms) ---
+    confidence = stt_result["confidence"]
+    stt_confidence_gauge.set(confidence, attrs)
+    stt_confidence_hist.record(confidence, attrs)  # Also record as histogram for reliable export
+    stt_duration_gauge.set(stt_result["duration_seconds"], attrs)
+    word_count = len(stt_result["transcript"].split())
+    stt_word_count_gauge.set(word_count, attrs)
+    stt_word_count_hist.record(word_count, attrs)
 
-    # --- Language metrics ---
-    entity_count_gauge.set(len(language_result.get("named_entities", [])), attrs)
-    keyphrase_count_gauge.set(len(language_result.get("key_phrases", [])), attrs)
-    sentiment_label = language_result.get("sentiment", {}).get("label", "neutral")
-    sentiment_gauge.set(_SENTIMENT_MAP.get(sentiment_label, 0.0), attrs)
+    # --- Language metrics (gauges + histograms) ---
+    entity_count = len(language_result["entities"])
+    entity_count_gauge.set(entity_count, attrs)
+    entity_count_hist.record(entity_count, attrs)
 
-    # --- TTS metrics ---
-    tts_char_count_gauge.set(tts_char_count, attrs)
+    keyphrase_count = len(language_result["key_phrases"])
+    keyphrase_count_gauge.set(keyphrase_count, attrs)
+    keyphrase_count_hist.record(keyphrase_count, attrs)
 
-    # --- Per-stage latency histograms ---
+    sentiment_label = language_result["sentiment"]["label"]
+    sentiment_value = _SENTIMENT_MAP.get(sentiment_label, 0.0)
+    sentiment_gauge.set(sentiment_value, attrs)
+    sentiment_hist.record(sentiment_value, attrs)
+
+    # --- TTS metrics (gauges + histograms) ---
+    char_count = tts_result["char_count"]
+    tts_char_count_gauge.set(char_count, attrs)
+    tts_char_count_hist.record(char_count, attrs)
+
+    # --- Per-stage latency histograms (these always export) ---
     stage_stt_hist.record(stage_timings["stt_ms"], attrs)
     stage_language_hist.record(stage_timings["language_ms"], attrs)
     stage_tts_hist.record(stage_timings["tts_ms"], attrs)

@@ -282,6 +282,7 @@
 <div class="tabs">
   <button class="tab-btn active" data-tab="analyzer">Analyzer</button>
   <button class="tab-btn" data-tab="stats">Stats</button>
+  <button class="tab-btn" data-tab="telemetry">Session Telemetry</button>
 </div>
 
 <!-- ==================== ANALYZER TAB ==================== -->
@@ -382,6 +383,24 @@
       <button class="btn btn-secondary" style="width:auto;margin-top:0;margin-bottom:20px;padding:8px 24px" id="refreshStats">Refresh</button>
       <div id="statsSummary"></div>
       <div id="statsTable"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SESSION TELEMETRY TAB ==================== -->
+<div id="telemetry" class="tab-panel">
+  <div class="container">
+    <div class="card">
+      <div class="card-title">Session Pipeline Telemetry</div>
+      <p style="font-size:0.85rem;color:var(--muted);margin-bottom:16px">
+        Real-time metrics from this session (in-memory, no Azure Portal needed).
+      </p>
+      <button class="btn btn-secondary" style="width:auto;margin-top:0;margin-bottom:20px;padding:8px 24px" id="refreshTelemetry">Refresh</button>
+      <div id="telemetrySummary"></div>
+      <div style="margin-top:24px">
+        <h3 style="font-size:0.9rem;font-weight:600;margin-bottom:12px">Recent Calls</h3>
+        <div id="recentCalls"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -689,6 +708,93 @@ async function loadStats() {
     }
   } catch (err) {
     document.getElementById('statsSummary').innerHTML = `<div class="error-box">Failed to load stats: ${escHtml(err.message)}</div>`;
+  }
+}
+
+// ---- Session Telemetry ----
+document.getElementById('refreshTelemetry').addEventListener('click', loadTelemetry);
+
+async function loadTelemetry() {
+  try {
+    const resp = await fetch('/telemetry-summary');
+    const data = await resp.json();
+
+    if (data.total_calls === 0) {
+      document.getElementById('telemetrySummary').innerHTML = '<p class="placeholder">No calls in this session yet. Submit some audio files to see metrics.</p>';
+      document.getElementById('recentCalls').innerHTML = '';
+      return;
+    }
+
+    const total = data.total_calls;
+    const avgConf = data.avg_confidence;
+    const minConf = data.min_confidence;
+    const maxConf = data.max_confidence;
+    const avgStt = data.avg_stt_ms;
+    const avgLang = data.avg_language_ms;
+    const avgTts = data.avg_tts_ms;
+    const p95Stt = data.p95_stt_ms;
+    const p95Lang = data.p95_language_ms;
+    const p95Tts = data.p95_tts_ms;
+    const sentiments = data.sentiment_breakdown || {};
+
+    document.getElementById('telemetrySummary').innerHTML = `
+      <div class="stat-grid">
+        <div class="stat-card"><div class="num">${total}</div><div class="lbl">Total Calls</div></div>
+        <div class="stat-card"><div class="num">${avgConf}</div><div class="lbl">Avg Confidence</div></div>
+        <div class="stat-card"><div class="num">${minConf}</div><div class="lbl">Min Confidence</div></div>
+        <div class="stat-card"><div class="num">${maxConf}</div><div class="lbl">Max Confidence</div></div>
+      </div>
+      <div style="margin-top:16px;padding:12px;background:#f1f5f9;border-radius:8px">
+        <p style="font-size:0.9rem;margin-bottom:8px"><strong>Stage Latencies (ms)</strong></p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:0.85rem">
+          <div>
+            <p style="color:var(--muted);margin-bottom:2px">STT</p>
+            <p style="font-size:1.1rem;font-weight:600">Avg: ${avgStt}</p>
+            <p style="color:var(--muted);font-size:0.8rem">P95: ${p95Stt}</p>
+          </div>
+          <div>
+            <p style="color:var(--muted);margin-bottom:2px">Language</p>
+            <p style="font-size:1.1rem;font-weight:600">Avg: ${avgLang}</p>
+            <p style="color:var(--muted);font-size:0.8rem">P95: ${p95Lang}</p>
+          </div>
+          <div>
+            <p style="color:var(--muted);margin-bottom:2px">TTS</p>
+            <p style="font-size:1.1rem;font-weight:600">Avg: ${avgTts}</p>
+            <p style="color:var(--muted);font-size:0.8rem">P95: ${p95Tts}</p>
+          </div>
+          <div>
+            <p style="color:var(--muted);margin-bottom:2px">Sentiment Breakdown</p>
+            <div style="font-size:0.85rem">
+              ${Object.entries(sentiments).map(([s, c]) => `<div>• ${s}: ${c}</div>`).join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Recent calls table
+    const recent = data.recent_calls || [];
+    if (recent.length) {
+      let tbl = '<table><thead><tr><th>Timestamp</th><th>Confidence</th><th>STT (ms)</th><th>Lang (ms)</th><th>TTS (ms)</th><th>Entities</th><th>Sentiment</th></tr></thead><tbody>';
+      recent.forEach(call => {
+        const ts = new Date(call.timestamp).toLocaleTimeString();
+        tbl += `<tr>
+          <td>${ts}</td>
+          <td>${(call.confidence * 100).toFixed(0)}%</td>
+          <td>${call.stt_ms.toFixed(0)}</td>
+          <td>${call.language_ms.toFixed(0)}</td>
+          <td>${call.tts_ms.toFixed(0)}</td>
+          <td>${call.entity_count}</td>
+          <td>${call.sentiment}</td>
+        </tr>`;
+      });
+      tbl += '</tbody></table>';
+      document.getElementById('recentCalls').innerHTML = tbl;
+    } else {
+      document.getElementById('recentCalls').innerHTML = '';
+    }
+  } catch (err) {
+    document.getElementById('telemetrySummary').innerHTML = `<div class="error-box">Failed to load telemetry: ${escHtml(err.message)}</div>`;
   }
 }
 </script>
