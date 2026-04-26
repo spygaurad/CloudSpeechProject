@@ -1,17 +1,23 @@
-"""Custom OpenTelemetry metrics for every pipeline stage.
+"""Custom OpenTelemetry metrics and trace events for every pipeline stage.
 
 Import this module AFTER init_telemetry() has been called so that the
-Azure Monitor exporter is already registered with the metrics SDK.
+Azure Monitor exporter is already registered with the metrics and trace SDKs.
 """
 
-from opentelemetry import metrics
+import time
+from typing import Any, Callable, TypeVar
+
+from opentelemetry import metrics, trace
 
 from app.schemas import TranscribeResponse
 
+_T = TypeVar("_T")
+
 # ---------------------------------------------------------------------------
-# Meter — one per service, created once at import time
+# Meter and tracer — one per service, created once at import time
 # ---------------------------------------------------------------------------
 meter = metrics.get_meter("memo-analyzer")
+tracer = trace.get_tracer("memo-analyzer")
 
 # ---------------------------------------------------------------------------
 # Metric instruments — module-level singletons
@@ -89,3 +95,51 @@ def emit_pipeline_metrics(
     stage_stt_hist.record(stage_timings["stt_ms"], attrs)
     stage_language_hist.record(stage_timings["language_ms"], attrs)
     stage_tts_hist.record(stage_timings["tts_ms"], attrs)
+
+
+# ---------------------------------------------------------------------------
+# Timing utility
+# ---------------------------------------------------------------------------
+
+def timed_stage(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> tuple[_T, float]:
+    """Run fn(*args, **kwargs) and return (result, elapsed_ms)."""
+    start = time.perf_counter()
+    result = fn(*args, **kwargs)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    return result, elapsed_ms
+
+
+# ---------------------------------------------------------------------------
+# Pipeline trace events
+# ---------------------------------------------------------------------------
+
+def emit_pipeline_event(
+    audio_format: str,
+    success: bool,
+    stt_result: TranscribeResponse | None = None,
+    lang_result: dict | None = None,
+    error_stage: str | None = None,
+    error_msg: str | None = None,
+) -> None:
+    """Set span attributes on the active span for pipeline_completed / pipeline_error.
+
+    Call once per /process request — after emit_pipeline_metrics on success,
+    or inside the except block on failure.
+    """
+    span = trace.get_current_span()
+
+    if success and stt_result is not None and lang_result is not None:
+        span.set_attribute("event.name", "pipeline_completed")
+        span.set_attribute("audio.format", audio_format)
+        span.set_attribute("stt.confidence", stt_result.confidence or 0.0)
+        span.set_attribute("stt.language", stt_result.language)
+        span.set_attribute("entities.count", len(lang_result.get("named_entities", [])))
+        span.set_attribute("sentiment", lang_result.get("sentiment", {}).get("label", "neutral"))
+    else:
+        span.set_attribute("event.name", "pipeline_error")
+        span.set_attribute("audio.format", audio_format)
+        if error_stage:
+            span.set_attribute("error.stage", error_stage)
+        if error_msg:
+            span.set_attribute("error.message", error_msg)
+            span.record_exception(Exception(error_msg))

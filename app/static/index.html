@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cloud Speech Memo Analyzer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --muted: #64748b;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --danger: #ef4444;
+      --success: #16a34a;
+      --amber: #d97706;
+      --radius: 12px;
+      --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+      --shadow-lg: 0 10px 15px -3px rgba(0,0,0,.08), 0 4px 6px rgba(0,0,0,.04);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      background: linear-gradient(135deg, #1e3a5f 0%, #3b82f6 100%);
+      color: #fff;
+      padding: 28px 0 24px;
+      text-align: center;
+      box-shadow: var(--shadow-lg);
+    }
+    .header h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
+    .header p { font-size: 0.9rem; opacity: 0.85; margin-top: 4px; }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      justify-content: center;
+      gap: 4px;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 0 16px;
+    }
+    .tab-btn {
+      padding: 12px 28px;
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      font-size: 0.95rem;
+      font-weight: 500;
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* Layout */
+    .container { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+    .grid { display: grid; grid-template-columns: 340px 1fr; gap: 24px; }
+    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+
+    /* Cards */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+    .card-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    /* Form elements */
+    label { display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 6px; color: var(--text); }
+
+    .file-drop {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 28px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #f1f5f9;
+      position: relative;
+    }
+    .file-drop:hover, .file-drop.dragover {
+      border-color: var(--primary);
+      background: #eff6ff;
+    }
+    .file-drop input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer;
+    }
+    .file-drop .icon { font-size: 2rem; margin-bottom: 6px; }
+    .file-drop .label { font-size: 0.85rem; color: var(--muted); }
+    .file-name {
+      margin-top: 8px;
+      font-size: 0.82rem;
+      color: var(--primary);
+      font-weight: 500;
+      word-break: break-all;
+    }
+
+    /* Record button */
+    .record-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+    .rec-btn {
+      width: 42px; height: 42px;
+      border-radius: 50%;
+      border: 2px solid var(--danger);
+      background: #fff;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .rec-btn .dot {
+      width: 16px; height: 16px;
+      background: var(--danger);
+      border-radius: 50%;
+      transition: all 0.2s;
+    }
+    .rec-btn.recording .dot {
+      border-radius: 3px;
+      width: 14px; height: 14px;
+    }
+    .rec-btn.recording { border-color: var(--danger); background: #fef2f2; }
+    .rec-status { font-size: 0.82rem; color: var(--muted); }
+    .rec-status.active { color: var(--danger); font-weight: 500; }
+
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.9rem;
+      background: #fff;
+      color: var(--text);
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-top: 16px;
+    }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-secondary { background: #e2e8f0; color: var(--text); }
+    .btn-secondary:hover { background: #cbd5e1; }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 18px; height: 18px;
+      border: 2.5px solid #fff;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Results */
+    .accordion { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .accordion + .accordion { margin-top: 12px; }
+    .accordion-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px;
+      background: #f8fafc;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.9rem;
+      user-select: none;
+      border-bottom: 1px solid transparent;
+    }
+    .accordion-header.open { border-bottom-color: var(--border); }
+    .accordion-header .chevron {
+      transition: transform 0.2s;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .accordion-header.open .chevron { transform: rotate(180deg); }
+    .accordion-body { padding: 16px; display: none; }
+    .accordion-header.open + .accordion-body { display: block; }
+
+    .placeholder { color: var(--muted); font-style: italic; font-size: 0.9rem; }
+
+    /* Tags */
+    .tag {
+      display: inline-block;
+      background: #dbeafe;
+      color: #1e40af;
+      border-radius: 16px;
+      padding: 4px 14px;
+      font-size: 0.82rem;
+      margin: 3px 2px;
+    }
+
+    /* Table */
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { text-align: left; padding: 8px 10px; background: #f1f5f9; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--border); }
+    td { padding: 8px 10px; border-bottom: 1px solid #f1f5f9; }
+
+    /* Sentiment bar */
+    .sent-bar-row { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+    .sent-label { width: 70px; font-size: 0.8rem; color: var(--muted); }
+    .sent-bar { height: 12px; border-radius: 4px; min-width: 3px; transition: width 0.4s; }
+    .sent-val { font-size: 0.8rem; color: var(--muted); }
+
+    /* Audio player */
+    audio { width: 100%; margin-top: 4px; }
+
+    /* Error */
+    .error-box {
+      padding: 12px 16px;
+      border-radius: 8px;
+      background: #fef2f2;
+      border: 1px solid #fca5a5;
+      color: #991b1b;
+      font-size: 0.9rem;
+    }
+
+    /* Stats cards */
+    .stat-grid { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
+    .stat-card {
+      text-align: center;
+      padding: 16px 24px;
+      background: #f1f5f9;
+      border-radius: var(--radius);
+      min-width: 120px;
+    }
+    .stat-card .num { font-size: 1.6rem; font-weight: 700; color: var(--text); }
+    .stat-card .lbl { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+
+    /* Highlight */
+    mark.low-conf {
+      background: #fef08a;
+      border-radius: 3px;
+      padding: 1px 4px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Cloud Speech Memo Analyzer</h1>
+  <p>Upload or record audio &mdash; transcribe, analyze, and listen to the summary</p>
+</div>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="analyzer">Analyzer</button>
+  <button class="tab-btn" data-tab="stats">Stats</button>
+</div>
+
+<!-- ==================== ANALYZER TAB ==================== -->
+<div id="analyzer" class="tab-panel active">
+  <div class="container">
+    <div class="grid">
+      <!-- Left: Input -->
+      <div>
+        <div class="card">
+          <div class="card-title">Input</div>
+
+          <label>Upload Audio File</label>
+          <div class="file-drop" id="fileDrop">
+            <input type="file" id="audioFile" accept=".wav,.mp3,.ogg,.opus,.aac,.m4a,.webm,.flac" />
+            <div class="icon">&#127908;</div>
+            <div class="label">Drop file here or click to browse<br/>WAV, MP3, OGG, OPUS, AAC, M4A, FLAC</div>
+            <div class="file-name" id="fileName"></div>
+          </div>
+
+          <div class="record-row">
+            <button class="rec-btn" id="recBtn" title="Record from microphone">
+              <div class="dot"></div>
+            </button>
+            <span class="rec-status" id="recStatus">Click to record</span>
+          </div>
+
+          <label style="margin-top:16px">TTS Voice</label>
+          <select id="voiceSelect"></select>
+
+          <button class="btn btn-primary" id="submitBtn">Submit</button>
+        </div>
+      </div>
+
+      <!-- Right: Results -->
+      <div id="resultsCol">
+        <!-- Transcript -->
+        <div class="accordion">
+          <div class="accordion-header open" onclick="toggleAccordion(this)">
+            Transcript <span class="chevron">&#9660;</span>
+          </div>
+          <div class="accordion-body">
+            <div id="transcriptOut" class="placeholder">Transcript will appear here&hellip;</div>
+          </div>
+        </div>
+
+        <!-- Key Phrases -->
+        <div class="accordion">
+          <div class="accordion-header open" onclick="toggleAccordion(this)">
+            Key Phrases <span class="chevron">&#9660;</span>
+          </div>
+          <div class="accordion-body">
+            <div id="kpOut" class="placeholder">Submit an audio file to see results.</div>
+          </div>
+        </div>
+
+        <!-- Named Entities -->
+        <div class="accordion">
+          <div class="accordion-header open" onclick="toggleAccordion(this)">
+            Named Entities <span class="chevron">&#9660;</span>
+          </div>
+          <div class="accordion-body">
+            <div id="entitiesOut" class="placeholder">Submit an audio file to see results.</div>
+          </div>
+        </div>
+
+        <!-- Sentiment -->
+        <div class="accordion">
+          <div class="accordion-header open" onclick="toggleAccordion(this)">
+            Sentiment <span class="chevron">&#9660;</span>
+          </div>
+          <div class="accordion-body">
+            <div id="sentimentOut" class="placeholder">Submit an audio file to see results.</div>
+          </div>
+        </div>
+
+        <!-- TTS Audio -->
+        <div class="accordion">
+          <div class="accordion-header open" onclick="toggleAccordion(this)">
+            TTS Summary Audio <span class="chevron">&#9660;</span>
+          </div>
+          <div class="accordion-body">
+            <div id="ttsOut" class="placeholder">Submit an audio file to hear the spoken summary.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== STATS TAB ==================== -->
+<div id="stats" class="tab-panel">
+  <div class="container">
+    <div class="card">
+      <div class="card-title">Transcription Confidence Statistics</div>
+      <p style="font-size:0.85rem;color:var(--muted);margin-bottom:16px">
+        Aggregated across all transcriptions logged to the local SQLite database.
+      </p>
+      <button class="btn btn-secondary" style="width:auto;margin-top:0;margin-bottom:20px;padding:8px 24px" id="refreshStats">Refresh</button>
+      <div id="statsSummary"></div>
+      <div id="statsTable"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- Tabs ----
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+  });
+});
+
+// ---- Accordion ----
+function toggleAccordion(el) {
+  el.classList.toggle('open');
+}
+
+// ---- File input ----
+const fileInput = document.getElementById('audioFile');
+const fileDrop = document.getElementById('fileDrop');
+const fileNameEl = document.getElementById('fileName');
+let selectedFile = null;
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) {
+    selectedFile = fileInput.files[0];
+    fileNameEl.textContent = selectedFile.name;
+  }
+});
+fileDrop.addEventListener('dragover', e => { e.preventDefault(); fileDrop.classList.add('dragover'); });
+fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('dragover'));
+fileDrop.addEventListener('drop', e => {
+  e.preventDefault();
+  fileDrop.classList.remove('dragover');
+  if (e.dataTransfer.files.length) {
+    selectedFile = e.dataTransfer.files[0];
+    fileNameEl.textContent = selectedFile.name;
+    // sync file input
+    const dt = new DataTransfer();
+    dt.items.add(selectedFile);
+    fileInput.files = dt.files;
+  }
+});
+
+// ---- WAV encoder (converts raw PCM float32 samples to a WAV blob) ----
+function encodeWav(samples, sampleRate) {
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+  const dataLength = samples.length * (bitsPerSample / 8);
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+
+  function writeStr(offset, str) { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); }
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);           // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeStr(36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// ---- Microphone recording ----
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+const recBtn = document.getElementById('recBtn');
+const recStatus = document.getElementById('recStatus');
+
+recBtn.addEventListener('click', async () => {
+  if (!isRecording) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
+      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        recStatus.textContent = 'Converting to WAV…';
+        stream.getTracks().forEach(t => t.stop());
+        try {
+          const webmBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+          const arrayBuf = await webmBlob.arrayBuffer();
+          const audioCtx = new AudioContext();
+          const decoded = await audioCtx.decodeAudioData(arrayBuf);
+          const pcm = decoded.getChannelData(0);  // mono
+          const wavBlob = encodeWav(pcm, decoded.sampleRate);
+          selectedFile = new File([wavBlob], 'recording.wav', { type: 'audio/wav' });
+          fileNameEl.textContent = 'recording.wav (recorded)';
+          recStatus.textContent = 'Recording saved';
+          audioCtx.close();
+        } catch (err) {
+          recStatus.textContent = 'Conversion failed — try uploading a file instead';
+          console.error('WAV conversion error:', err);
+        }
+      };
+      mediaRecorder.start();
+      isRecording = true;
+      recBtn.classList.add('recording');
+      recStatus.textContent = 'Recording… click to stop';
+      recStatus.classList.add('active');
+    } catch (err) {
+      recStatus.textContent = 'Microphone access denied';
+    }
+  } else {
+    mediaRecorder.stop();
+    isRecording = false;
+    recBtn.classList.remove('recording');
+    recStatus.classList.remove('active');
+  }
+});
+
+// ---- Load voices ----
+const voiceSelect = document.getElementById('voiceSelect');
+fetch('/voices').then(r => r.json()).then(data => {
+  data.voices.forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v.name;
+    opt.textContent = `${v.persona.charAt(0).toUpperCase() + v.persona.slice(1)} — ${v.name}`;
+    voiceSelect.appendChild(opt);
+  });
+});
+
+// ---- Submit ----
+const submitBtn = document.getElementById('submitBtn');
+submitBtn.addEventListener('click', async () => {
+  if (!selectedFile) {
+    showError('Please record or upload an audio file before submitting.');
+    return;
+  }
+
+  const voice = voiceSelect.value;
+  const formData = new FormData();
+  formData.append('audio', selectedFile);
+  formData.append('voice', voice);
+
+  submitBtn.disabled = true;
+  submitBtn.innerHTML = '<span class="spinner"></span> Processing…';
+  clearResults();
+
+  try {
+    const resp = await fetch('/process', { method: 'POST', body: formData });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `Server error (${resp.status})`);
+    }
+    const data = await resp.json();
+    renderResults(data);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = 'Submit';
+  }
+});
+
+function clearResults() {
+  document.getElementById('transcriptOut').innerHTML = '<span class="placeholder">Processing&hellip;</span>';
+  document.getElementById('kpOut').innerHTML = '';
+  document.getElementById('entitiesOut').innerHTML = '';
+  document.getElementById('sentimentOut').innerHTML = '';
+  document.getElementById('ttsOut').innerHTML = '';
+}
+
+function showError(msg) {
+  document.getElementById('transcriptOut').innerHTML = `<div class="error-box"><strong>Error</strong> — ${escHtml(msg)}</div>`;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function renderResults(data) {
+  const t = data.transcription;
+  const a = data.analysis;
+
+  // Transcript with low-confidence highlights
+  const lowSet = new Set(t.low_confidence_words || []);
+  let html = '';
+  if (t.words && t.words.length) {
+    html = t.words.map(w => {
+      const isLow = (w.confidence !== null && w.confidence < 0.70) || lowSet.has(w.word);
+      if (isLow) {
+        const title = w.confidence !== null ? `confidence: ${(w.confidence * 100).toFixed(0)}%` : 'low confidence';
+        return `<mark class="low-conf" title="${title}">${escHtml(w.word)}</mark>`;
+      }
+      return escHtml(w.word);
+    }).join(' ');
+  } else {
+    html = escHtml(t.transcript);
+  }
+  let note = '';
+  if (lowSet.size) {
+    note = `<p style="font-size:0.8rem;color:#92400e;margin-top:8px">&#9888; ${lowSet.size} word(s) highlighted had confidence below 70%.</p>`;
+  }
+  if (t.retry_attempted) {
+    note += `<p style="font-size:0.8rem;color:#1d4ed8;margin-top:4px">&#8505; Low overall confidence — automatically retried.</p>`;
+  }
+  document.getElementById('transcriptOut').innerHTML = `<p style="font-size:0.95rem;line-height:1.8">${html}</p>${note}`;
+
+  // Key Phrases
+  const kp = a.key_phrases || [];
+  if (kp.length) {
+    document.getElementById('kpOut').innerHTML = kp.map(p => `<span class="tag">${escHtml(p)}</span>`).join(' ');
+  } else {
+    document.getElementById('kpOut').innerHTML = '<span class="placeholder">No key phrases detected.</span>';
+  }
+
+  // Named Entities
+  const ents = a.named_entities || [];
+  if (ents.length) {
+    let tbl = '<table><thead><tr><th>Text</th><th>Category</th><th>Subcategory</th><th>Confidence</th></tr></thead><tbody>';
+    ents.forEach(e => {
+      const conf = typeof e.confidence === 'number' ? (e.confidence * 100).toFixed(1) + '%' : 'N/A';
+      tbl += `<tr><td>${escHtml(e.text)}</td><td>${escHtml(e.category)}</td><td>${escHtml(e.subcategory || '—')}</td><td>${conf}</td></tr>`;
+    });
+    tbl += '</tbody></table>';
+    document.getElementById('entitiesOut').innerHTML = tbl;
+  } else {
+    document.getElementById('entitiesOut').innerHTML = '<span class="placeholder">No named entities detected.</span>';
+  }
+
+  // Sentiment
+  const sent = a.sentiment || {};
+  const label = (sent.label || 'unknown');
+  const conf = sent.confidence || {};
+  const pos = conf.positive || 0, neu = conf.neutral || 0, neg = conf.negative || 0;
+  const colorMap = { positive: '#16a34a', neutral: '#d97706', negative: '#dc2626' };
+  const lc = colorMap[label] || '#374151';
+  document.getElementById('sentimentOut').innerHTML = `
+    <p style="margin-bottom:10px;font-size:0.95rem">Overall sentiment: <strong style="color:${lc}">${label.charAt(0).toUpperCase() + label.slice(1)}</strong></p>
+    <div class="sent-bar-row"><span class="sent-label">Positive</span><div class="sent-bar" style="width:${Math.max(pos*200,3)}px;background:#16a34a"></div><span class="sent-val">${(pos*100).toFixed(1)}%</span></div>
+    <div class="sent-bar-row"><span class="sent-label">Neutral</span><div class="sent-bar" style="width:${Math.max(neu*200,3)}px;background:#d97706"></div><span class="sent-val">${(neu*100).toFixed(1)}%</span></div>
+    <div class="sent-bar-row"><span class="sent-label">Negative</span><div class="sent-bar" style="width:${Math.max(neg*200,3)}px;background:#dc2626"></div><span class="sent-val">${(neg*100).toFixed(1)}%</span></div>
+  `;
+
+  // TTS Audio
+  const tts = data.tts;
+  if (tts && tts.audio_base64) {
+    const mime = tts.format === 'mp3' ? 'audio/mpeg' : 'audio/mpeg';
+    document.getElementById('ttsOut').innerHTML = `<audio controls src="data:${mime};base64,${tts.audio_base64}"></audio>`;
+  } else {
+    document.getElementById('ttsOut').innerHTML = '<span class="placeholder">No audio generated.</span>';
+  }
+}
+
+// ---- Stats ----
+document.getElementById('refreshStats').addEventListener('click', loadStats);
+
+async function loadStats() {
+  try {
+    const resp = await fetch('/stats');
+    const data = await resp.json();
+    const total = data.total_transcriptions;
+
+    if (total === 0) {
+      document.getElementById('statsSummary').innerHTML = '<p class="placeholder">No transcriptions recorded yet.</p>';
+      document.getElementById('statsTable').innerHTML = '';
+      return;
+    }
+
+    const avgConf = data.average_confidence;
+    const retryRate = data.retry_rate;
+    const avgLcw = data.average_low_confidence_word_rate;
+
+    document.getElementById('statsSummary').innerHTML = `
+      <div class="stat-grid">
+        <div class="stat-card"><div class="num">${total}</div><div class="lbl">Total</div></div>
+        <div class="stat-card"><div class="num">${avgConf !== null ? (avgConf*100).toFixed(1)+'%' : 'N/A'}</div><div class="lbl">Avg Confidence</div></div>
+        <div class="stat-card"><div class="num">${retryRate !== null ? (retryRate*100).toFixed(1)+'%' : 'N/A'}</div><div class="lbl">Retry Rate</div></div>
+        <div class="stat-card"><div class="num">${avgLcw !== null ? (avgLcw*100).toFixed(1)+'%' : 'N/A'}</div><div class="lbl">Low-Conf Word Rate</div></div>
+      </div>
+    `;
+
+    const recent = data.recent || [];
+    if (recent.length) {
+      const cols = Object.keys(recent[0]);
+      let tbl = '<table><thead><tr>' + cols.map(c => `<th>${escHtml(c)}</th>`).join('') + '</tr></thead><tbody>';
+      recent.forEach(row => {
+        tbl += '<tr>' + cols.map(c => `<td>${escHtml(String(row[c] ?? ''))}</td>`).join('') + '</tr>';
+      });
+      tbl += '</tbody></table>';
+      document.getElementById('statsTable').innerHTML = tbl;
+    } else {
+      document.getElementById('statsTable').innerHTML = '';
+    }
+  } catch (err) {
+    document.getElementById('statsSummary').innerHTML = `<div class="error-box">Failed to load stats: ${escHtml(err.message)}</div>`;
+  }
+}
+</script>
+</body>
+</html>

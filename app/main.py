@@ -5,33 +5,29 @@ load_dotenv()  # load .env before everything else
 from telemetry import init_telemetry
 init_telemetry()  # initialize before FastAPI or any Azure SDK imports
 
-import time
-
-import gradio as gr
 import uvicorn
+from pathlib import Path
 from fastapi import FastAPI, File, Form, Query, UploadFile
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import FileResponse, Response
 
 from app.config import DEFAULT_TTS_VOICE, PORT
-from app.gradio_app import gradio_app
 from app.schemas import AnalyzeRequest, ProcessResponse, TranscribeResponse
 from app.services.audio_service import cleanup_temp_file, save_upload_to_temp, validate_audio_file
 from app.services.language_service import analyze_text
 from app.services.summary_service import build_summary_text
-from app.metrics import emit_pipeline_metrics
+from app.metrics import emit_pipeline_event, emit_pipeline_metrics, timed_stage, tracer
 from app.services.stats_service import get_stats, log_transcription  # noqa: F401 (init_db runs on import)
 from app.services.transcription_service import transcribe_file_with_sdk, transcribe_with_confidence_retry
 from app.services.tts_service import get_voices, synthesize_speech_base64, synthesize_speech_bytes
 
-app = FastAPI(title="Cloud Speech Project API", version="1.0.0")
+STATIC_DIR = Path(__file__).parent / "static"
 
-# Mount the Gradio UI at /ui  (visit http://localhost:8000/ui in your browser)
-app = gr.mount_gradio_app(app, gradio_app, path="/ui")
+app = FastAPI(title="Cloud Speech Project API", version="1.0.0")
 
 
 @app.get("/")
-def root() -> RedirectResponse:
-    return RedirectResponse(url="/ui")
+def root() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health")
@@ -64,52 +60,90 @@ async def process(
     temp_path = await save_upload_to_temp(audio, validation.suffix)
 
     try:
-        t0 = time.perf_counter()
-        transcription, retry_attempted, retry_language = transcribe_with_confidence_retry(
-            temp_path, content_type=audio.content_type
-        )
-        stt_ms = (time.perf_counter() - t0) * 1000
+        with tracer.start_as_current_span("pipeline.process") as root_span:
+            root_span.set_attribute("audio.format", validation.suffix)
 
-        log_transcription(
-            language=transcription.language,
-            overall_confidence=transcription.confidence,
-            total_words=len(transcription.words),
-            low_confidence_words=len(transcription.low_confidence_words),
-            retry_attempted=retry_attempted,
-            retry_language=retry_language,
-            final_confidence=transcription.confidence if retry_attempted else None,
-        )
+            current_stage: str | None = None
+            try:
+                # --- Stage 1: Speech-to-Text ---
+                current_stage = "stt"
+                with tracer.start_as_current_span("stage.speech_to_text") as stt_span:
+                    (transcription, retry_attempted, retry_language), stt_ms = timed_stage(
+                        transcribe_with_confidence_retry, temp_path, content_type=audio.content_type
+                    )
+                    stt_span.set_attribute("stt.confidence", transcription.confidence or 0.0)
+                    stt_span.set_attribute("stt.word_count", len(transcription.transcript.split()))
+                    stt_span.set_attribute("stt.language", transcription.language)
+                    stt_span.set_attribute("duration_ms", stt_ms)
 
-        t1 = time.perf_counter()
-        analysis = analyze_text(transcription.transcript)
-        language_ms = (time.perf_counter() - t1) * 1000
+                log_transcription(
+                    language=transcription.language,
+                    overall_confidence=transcription.confidence,
+                    total_words=len(transcription.words),
+                    low_confidence_words=len(transcription.low_confidence_words),
+                    retry_attempted=retry_attempted,
+                    retry_language=retry_language,
+                    final_confidence=transcription.confidence if retry_attempted else None,
+                )
 
-        summary = build_summary_text(analysis)
+                # --- Stage 2: Language Analysis ---
+                current_stage = "language"
+                with tracer.start_as_current_span("stage.language_analysis") as lang_span:
+                    analysis, language_ms = timed_stage(analyze_text, transcription.transcript)
+                    lang_span.set_attribute("entity_count", len(analysis.get("named_entities", [])))
+                    lang_span.set_attribute("keyphrase_count", len(analysis.get("key_phrases", [])))
+                    lang_span.set_attribute(
+                        "sentiment", analysis.get("sentiment", {}).get("label", "neutral")
+                    )
+                    lang_span.set_attribute("duration_ms", language_ms)
 
-        t2 = time.perf_counter()
-        tts_payload = synthesize_speech_base64(summary, voice)
-        tts_ms = (time.perf_counter() - t2) * 1000
+                summary = build_summary_text(analysis)
 
-        emit_pipeline_metrics(
-            stt_result=transcription,
-            language_result=analysis,
-            tts_char_count=len(summary),
-            stage_timings={"stt_ms": stt_ms, "language_ms": language_ms, "tts_ms": tts_ms},
-            audio_format=validation.suffix,
-        )
+                # --- Stage 3: Text-to-Speech ---
+                current_stage = "tts"
+                with tracer.start_as_current_span("stage.text_to_speech") as tts_span:
+                    tts_payload, tts_ms = timed_stage(synthesize_speech_base64, summary, voice)
+                    tts_span.set_attribute("char_count", len(summary))
+                    tts_span.set_attribute("tts.voice", voice)
+                    tts_span.set_attribute("duration_ms", tts_ms)
 
-        if validation.partial_support:
-            analysis["audio_format_note"] = (
-                "AAC/M4A is partially supported by Azure Speech. "
-                "If recognition quality is low, pre-convert to WAV PCM 16kHz/16-bit/mono."
-            )
+                emit_pipeline_metrics(
+                    stt_result=transcription,
+                    language_result=analysis,
+                    tts_char_count=len(summary),
+                    stage_timings={"stt_ms": stt_ms, "language_ms": language_ms, "tts_ms": tts_ms},
+                    audio_format=validation.suffix,
+                )
+                emit_pipeline_event(
+                    audio_format=validation.suffix,
+                    success=True,
+                    stt_result=transcription,
+                    lang_result=analysis,
+                )
 
-        return ProcessResponse(
-            transcription=transcription,
-            analysis=analysis,
-            summary_text=summary,
-            tts=tts_payload,
-        )
+                if validation.partial_support:
+                    analysis["audio_format_note"] = (
+                        "AAC/M4A is partially supported by Azure Speech. "
+                        "If recognition quality is low, pre-convert to WAV PCM 16kHz/16-bit/mono."
+                    )
+
+                return ProcessResponse(
+                    transcription=transcription,
+                    analysis=analysis,
+                    summary_text=summary,
+                    tts=tts_payload,
+                )
+
+            except Exception as exc:
+                # Annotate the root span before it closes, then re-raise
+                emit_pipeline_event(
+                    audio_format=validation.suffix,
+                    success=False,
+                    error_stage=current_stage,
+                    error_msg=str(exc),
+                )
+                raise
+
     finally:
         cleanup_temp_file(temp_path)
 

@@ -87,11 +87,30 @@ def _build_transcript_html(transcript: str, words: list, low_conf_set: set[str])
 
 
 # ---------------------------------------------------------------------------
+# Error output helper — returns clean empty state to every output block
+# ---------------------------------------------------------------------------
+def _error_outputs(message: str) -> tuple:
+    error_html = (
+        f'<div style="padding:12px 16px;border-radius:8px;background:#fef2f2;'
+        f'border:1px solid #fca5a5;color:#991b1b;font-size:14px;line-height:1.6">'
+        f'<strong>Error</strong> — {message}'
+        f'</div>'
+    )
+    return (
+        error_html,                                                          # transcript
+        _EMPTY_HINT,                                                         # key phrases
+        pd.DataFrame(columns=["Text", "Category", "Subcategory", "Confidence"]),  # entities
+        _EMPTY_HINT,                                                         # sentiment
+        None,                                                                # tts audio
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core processing function (Analyzer tab)
 # ---------------------------------------------------------------------------
 def _process(audio_path: str | None, voice_label: str) -> tuple:
     if audio_path is None:
-        raise gr.Error("Please record or upload an audio file before submitting.")
+        return _error_outputs("Please record or upload an audio file before submitting.")
 
     voice = VOICE_CHOICES.get(voice_label, DEFAULT_TTS_VOICE)
     suffix = Path(audio_path).suffix.lower()
@@ -111,19 +130,25 @@ def _process(audio_path: str | None, voice_label: str) -> tuple:
             final_confidence=transcription.confidence if retry_attempted else None,
         )
     except HTTPException as exc:
-        raise gr.Error(f"Transcription failed: {exc.detail}") from exc
+        return _error_outputs(exc.detail)
+    except Exception:
+        return _error_outputs("Transcription failed due to an unexpected error.")
 
     try:
         analysis = analyze_text(transcription.transcript)
     except HTTPException as exc:
-        raise gr.Error(f"Language analysis failed: {exc.detail}") from exc
+        return _error_outputs(exc.detail)
+    except Exception:
+        return _error_outputs("Language analysis failed due to an unexpected error.")
 
     summary = build_summary_text(analysis)
 
     try:
         _, tts_bytes = synthesize_speech_bytes(summary, voice)
     except HTTPException as exc:
-        raise gr.Error(f"TTS synthesis failed: {exc.detail}") from exc
+        return _error_outputs(exc.detail)
+    except Exception:
+        return _error_outputs("TTS synthesis failed due to an unexpected error.")
 
     tts_path = os.path.join(tempfile.gettempdir(), f"tts-{uuid.uuid4().hex}.mp3")
     with open(tts_path, "wb") as fh:
@@ -267,7 +292,9 @@ with gr.Blocks(title="Cloud Speech Memo Analyzer") as gradio_app:
                         label="Record or Upload Audio",
                         sources=["microphone", "upload"],
                         type="filepath",
-                        format="wav",   # forces WAV for mic recordings → fixes post-record playback
+                        # No format conversion — pass the original file path directly to
+                        # _process so Gradio never calls pydub on potentially corrupted files.
+                        # Corrupted uploads are caught and reported by _process itself.
                     )
 
                     voice_selector = gr.Dropdown(

@@ -28,9 +28,19 @@ def _sdk_media_type_error() -> HTTPException:
     return HTTPException(
         status_code=415,
         detail=(
-            "Unsupported or invalid audio media format. "
-            "Supported: WAV (PCM), MP3, OGG/Opus, AAC/M4A. "
-            "Ensure the file is a valid audio file and not corrupted."
+            "Unsupported audio format. "
+            "Accepted formats: WAV (PCM), MP3, OGG/Opus, AAC/M4A."
+        ),
+    )
+
+
+def _corrupt_audio_error() -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail=(
+            "The uploaded audio file could not be decoded. "
+            "It appears to be corrupted, truncated, or not a valid audio file. "
+            "Please verify the file and try again."
         ),
     )
 
@@ -52,11 +62,28 @@ def _is_media_runtime_error(exc: RuntimeError) -> bool:
     )
 
 
+# Keywords in Azure Speech SDK cancellation messages that indicate the file is
+# corrupted or invalid rather than simply an unsupported format.
+_CORRUPTION_KEYWORDS = frozenset({
+    "corrupt", "damaged", "truncat", "unexpected end",
+    "invalid data", "no audio", "empty", "decod",
+})
+
+
+def _is_corruption_error(detail: str) -> bool:
+    lower = detail.lower()
+    return any(kw in lower for kw in _CORRUPTION_KEYWORDS)
+
+
 def _ffmpeg_convert_to_wav(input_path: str) -> str | None:
     """Convert any audio file to 16 kHz / 16-bit / mono PCM WAV using ffmpeg.
 
-    Returns the path of the new WAV file, or None if conversion fails.
-    The caller is responsible for deleting the returned file.
+    Returns the path of the new WAV file on success, or None if ffmpeg is not
+    installed (caller should fall back to the SDK compressed-stream path).
+
+    Raises:
+        HTTPException(422): ffmpeg is installed but failed to decode the file —
+            the file is corrupted, truncated, or not a valid audio file.
     """
     out_path = os.path.join(tempfile.gettempdir(), f"converted-{uuid.uuid4().hex}.wav")
     try:
@@ -72,16 +99,26 @@ def _ffmpeg_convert_to_wav(input_path: str) -> str | None:
             capture_output=True,
             timeout=60,
         )
-        if result.returncode == 0 and Path(out_path).stat().st_size > 0:
-            return out_path
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+    except FileNotFoundError:
+        # ffmpeg is not installed — caller falls back to SDK compressed stream.
+        return None
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+        return None
 
+    if result.returncode == 0 and Path(out_path).stat().st_size > 0:
+        return out_path
+
+    # ffmpeg ran but returned a non-zero exit code: the file cannot be decoded.
+    # This means it is corrupted, truncated, or masquerading as a supported format.
     try:
         os.remove(out_path)
     except OSError:
         pass
-    return None
+    raise _corrupt_audio_error()
 
 
 def _resolve_container_format(
@@ -212,6 +249,8 @@ def _run_recognition(
     except UnsupportedAudioMediaError as exc:
         raise _sdk_media_type_error() from exc
     except RuntimeError as exc:
+        if _is_corruption_error(str(exc)):
+            raise _corrupt_audio_error() from exc
         raise _sdk_media_type_error() from exc
 
     is_compressed = _stream_handle is not None
@@ -262,6 +301,10 @@ def _run_recognition(
     if recognition_error:
         detail = recognition_error["detail"]
         detail_lower = detail.lower()
+        # Check corruption first — a corrupted file of a supported type should
+        # return 422 (Unprocessable Entity), not 415 (Unsupported Media Type).
+        if _is_corruption_error(detail_lower):
+            raise _corrupt_audio_error()
         if "audio" in detail_lower and (
             "format" in detail_lower
             or "header" in detail_lower
