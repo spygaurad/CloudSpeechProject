@@ -167,5 +167,23 @@ def summary_audio(
     return Response(content=audio_bytes, media_type="audio/mpeg")
 
 
+@app.on_event("shutdown")
+def shutdown_event():
+    """Flush any remaining telemetry before shutdown."""
+    try:
+        from opentelemetry.sdk.trace import get_tracer_provider
+        from opentelemetry.sdk.metrics import get_meter_provider
+
+        tp = get_tracer_provider()
+        if hasattr(tp, 'force_flush'):
+            tp.force_flush(timeout_millis=5000)
+
+        mp = get_meter_provider()
+        if hasattr(mp, 'force_flush'):
+            mp.force_flush(timeout_millis=5000)
+    except Exception as e:
+        print(f"Error flushing telemetry: {e}")
+
+
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=PORT)

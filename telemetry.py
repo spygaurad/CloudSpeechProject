@@ -2,6 +2,8 @@
 import os
 
 from azure.monitor.opentelemetry import configure_azure_monitor
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
 
 def init_telemetry() -> None:
@@ -10,4 +12,9 @@ def init_telemetry() -> None:
     if not connection_string:
         raise ValueError("APPLICATIONINSIGHTS_CONNECTION_STRING not set in .env")
     configure_azure_monitor(connection_string=connection_string)
-    print("Application Insights initialized.")
+
+    # Enable OpenTelemetry auto-instrumentation for FastAPI and HTTP requests
+    FastAPIInstrumentor().instrument()
+    RequestsInstrumentor().instrument()
+
+    print("Application Insights initialized with FastAPI instrumentation.")
