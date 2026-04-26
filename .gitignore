@@ -6,4 +6,4 @@ tests/__pycache__/
 *.pyc
 transcription_stats.db
 .azure
-
+.DS_Store
