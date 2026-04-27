@@ -2,6 +2,35 @@
 
 A production-grade voice-powered memo analyzer built with Azure AI services. Record or upload audio, transcribe with Azure Speech, analyze with Azure Language, synthesize summaries with Text-to-Speech, and monitor everything with Azure Application Insights telemetry.
 
+## 📁 Project Structure
+
+```
+CloudSpeechProject/
+├── app/
+│   ├── main.py                      # FastAPI app + all endpoints
+│   ├── metrics.py                   # OpenTelemetry + custom metrics
+│   ├── telemetry_log.py            # Session logging (in-memory)
+│   ├── config.py                    # Configuration + constants
+│   ├── schemas.py                   # Pydantic request/response models
+│   ├── static/
+│   │   └── index.html              # Full frontend (3 tabs: Analyzer, Stats, Telemetry)
+│   └── services/
+│       ├── transcription_service.py # Azure Speech SDK (batch mode)
+│       ├── language_service.py      # Azure Language SDK (4 analyses)
+│       ├── tts_service.py          # Azure Speech TTS (Neural voices)
+│       ├── summary_service.py       # Summary text generation
+│       ├── stats_service.py         # SQLite database (local stats)
+│       └── audio_service.py         # Audio validation + temp file handling
+├── telemetry.py                     # OpenTelemetry initialization
+├── requirements.txt                 # Python dependencies
+├── .env                            # Environment variables (git-ignored)
+├── .gitignore                      # Ignore .env, *.db, etc.
+├── transcription_stats.db          # SQLite database (auto-created)
+└── README.md                        # This file
+```
+
+
+
 
 https://github.com/user-attachments/assets/3393e3f9-50fa-4fc9-b1ec-34caff2bebfc
 
@@ -80,8 +109,8 @@ https://github.com/user-attachments/assets/3393e3f9-50fa-4fc9-b1ec-34caff2bebfc
 ### 1. Clone and Install
 
 ```bash
-cd /Users/spygaurad/Desktop/WFUProjects/Cloud_Computing/CloudSpeechProject
-/Users/spygaurad/Desktop/WFUProjects/Cloud_Computing/cloud_venv/bin/python -m venv cloud_venv
+cd CloudSpeechProject
+python -m venv cloud_venv
 source cloud_venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -91,7 +120,7 @@ pip install -r requirements.txt
 ```bash
 cat > .env << 'EOF'
 AZURE_SPEECH_KEY=your-speech-key
-AZURE_SPEECH_REGION=eastus2
+AZURE_SPEECH_REGION=eastus22
 AZURE_LANGUAGE_KEY=your-language-key
 AZURE_LANGUAGE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
 APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=...;IngestionEndpoint=...
@@ -99,25 +128,17 @@ WEBSITES_PORT=8000
 EOF
 ```
 
-**⚠️ Never commit `.env` to Git!** Add to `.gitignore`:
-```
-.env
-*.db
-__pycache__/
-.pytest_cache/
-```
-
 ### 3. Run Locally
 
 ```bash
-/Users/spygaurad/Desktop/WFUProjects/Cloud_Computing/cloud_venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Then visit: **http://localhost:8000**
 
-## 🔧 Azure Resource Provisioning (From Scratch)
+## 🔧 Azure Resource Provisioning
 
-All resources use the **F0 free tier** = **$0 cost**.
+All resources use the **F0 free tier**.
 
 ### Step 1: Install Azure CLI
 
@@ -131,7 +152,7 @@ az login
 ```bash
 az group create \
   --name csc391-speech-rg \
-  --location eastus
+  --location eastus22
 ```
 
 ### Step 3: Provision Azure Speech Service
@@ -143,7 +164,7 @@ az cognitiveservices account create \
   --resource-group csc391-speech-rg \
   --kind SpeechServices \
   --sku F0 \
-  --location eastus \
+  --location eastus2 \
   --yes
 
 # Retrieve the API key (save this in .env)
@@ -162,7 +183,7 @@ az cognitiveservices account create \
   --resource-group csc391-speech-rg \
   --kind TextAnalytics \
   --sku F0 \
-  --location eastus \
+  --location eastus2 \
   --yes
 
 # Retrieve the API key
@@ -185,7 +206,7 @@ az cognitiveservices account show \
 az monitor log-analytics workspace create \
   --resource-group csc391-speech-rg \
   --workspace-name csc391-logs \
-  --location eastus
+  --location eastus2
 
 # Save the workspace ID (needed for next command)
 WORKSPACE_ID=$(az monitor log-analytics workspace show \
@@ -196,7 +217,7 @@ WORKSPACE_ID=$(az monitor log-analytics workspace show \
 # Step 5b: Create Application Insights
 az monitor app-insights component create \
   --app csc391-insights \
-  --location eastus \
+  --location eastus2 \
   --resource-group csc391-speech-rg \
   --workspace $WORKSPACE_ID
 
@@ -213,14 +234,14 @@ Copy all the retrieved values:
 
 ```bash
 AZURE_SPEECH_KEY=<from-step-3>
-AZURE_SPEECH_REGION=eastus
+AZURE_SPEECH_REGION=eastus2
 AZURE_LANGUAGE_KEY=<from-step-4>
 AZURE_LANGUAGE_ENDPOINT=<from-step-4>
 APPLICATIONINSIGHTS_CONNECTION_STRING=<from-step-5c>
 WEBSITES_PORT=8000
 ```
 
-## 🌐 Deploying to Azure Web App
+## Deploying to Azure Web App
 
 ### Step 1: Create Web App Resources
 
@@ -273,7 +294,7 @@ az webapp config appsettings set \
   --resource-group csc391-speech-rg \
   --settings \
     AZURE_SPEECH_KEY="<your-key>" \
-    AZURE_SPEECH_REGION="eastus" \
+    AZURE_SPEECH_REGION="eastus2" \
     AZURE_LANGUAGE_KEY="<your-key>" \
     AZURE_LANGUAGE_ENDPOINT="<your-endpoint>" \
     APPLICATIONINSIGHTS_CONNECTION_STRING="<your-connection-string>"
@@ -316,37 +337,6 @@ az webapp browse \
 | `/telemetry-summary` | GET | Session metrics (in-memory) |
 | `/summary-audio` | GET | Convert text to audio |
 
-### Example: Full Pipeline
-
-```bash
-curl -X POST http://localhost:8000/process \
-  -F "audio=@recording.wav" \
-  -F "voice=en-US-JennyNeural" | jq .
-```
-
-**Response:**
-```json
-{
-  "transcription": {
-    "transcript": "Meeting starts at 3pm. Please review the proposal before then.",
-    "language": "en-US",
-    "confidence": 0.92,
-    "words": [{"word": "Meeting", "confidence": 0.98}, ...],
-    "low_confidence_words": []
-  },
-  "analysis": {
-    "named_entities": [...],
-    "key_phrases": ["meeting", "proposal"],
-    "sentiment": {"label": "neutral", "confidence": {"positive": 0.0, "neutral": 1.0, "negative": 0.0}}
-  },
-  "summary_text": "Your memo mentions 2 key topics: meeting, proposal. The overall tone is neutral.",
-  "tts": {
-    "voice": "en-US-JennyNeural",
-    "format": "mp3",
-    "audio_base64": "//NExAA..."
-  }
-}
-```
 
 ## 📈 Monitoring & Telemetry
 
@@ -433,71 +423,7 @@ requests
 | order by timestamp desc
 ```
 
-## 📁 Project Structure
-
-```
-CloudSpeechProject/
-├── app/
-│   ├── main.py                      # FastAPI app + all endpoints
-│   ├── metrics.py                   # OpenTelemetry + custom metrics
-│   ├── telemetry_log.py            # Session logging (in-memory)
-│   ├── config.py                    # Configuration + constants
-│   ├── schemas.py                   # Pydantic request/response models
-│   ├── static/
-│   │   └── index.html              # Full frontend (3 tabs: Analyzer, Stats, Telemetry)
-│   └── services/
-│       ├── transcription_service.py # Azure Speech SDK (batch mode)
-│       ├── language_service.py      # Azure Language SDK (4 analyses)
-│       ├── tts_service.py          # Azure Speech TTS (Neural voices)
-│       ├── summary_service.py       # Summary text generation
-│       ├── stats_service.py         # SQLite database (local stats)
-│       └── audio_service.py         # Audio validation + temp file handling
-├── telemetry.py                     # OpenTelemetry initialization
-├── requirements.txt                 # Python dependencies
-├── .env                            # Environment variables (git-ignored)
-├── .gitignore                      # Ignore .env, *.db, etc.
-├── transcription_stats.db          # SQLite database (auto-created)
-└── README.md                        # This file
-```
-
-## 🔑 Environment Variables
-
-| Variable | Required | Example |
-|----------|----------|---------|
-| `AZURE_SPEECH_KEY` | Yes | `57SJf4csw1...` |
-| `AZURE_SPEECH_REGION` | Yes | `eastus2` |
-| `AZURE_LANGUAGE_KEY` | Yes | `8LmEwg7QFHz2...` |
-| `AZURE_LANGUAGE_ENDPOINT` | Yes | `https://csc391-language...cognitiveservices.azure.com/` |
-| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Yes | `InstrumentationKey=...;IngestionEndpoint=...` |
-| `WEBSITES_PORT` | No | `8000` (default) |
-| `STATS_DB_PATH` | No | `transcription_stats.db` (default) |
-
-## ⚙️ Technical Details
-
-### Telemetry Implementation
-
-- **Tracer**: OpenTelemetry SDK for distributed traces
-- **Meter**: Custom gauges + histograms for per-stage metrics
-- **Exporter**: Azure Monitor (Application Insights)
-- **Session Log**: In-memory list + SQLite persistence
-- **Spans**: 4 levels (request → pipeline → 3 stages)
-
-### Audio Processing
-
-- **Recording**: MediaRecorder API (browser) → WebM → WAV (via Web Audio API)
-- **Upload**: Drag-and-drop + file picker
-- **Formats**: WAV (preferred), MP3, OGG, AAC, M4A
-- **Max size**: 25 MB
-- **Sample rate**: 16 kHz (Azure Speech requirement)
-
-### Performance Targets
-
-- **STT**: ~1-2 seconds for typical 1-5 min memo
-- **Language**: ~200-400 ms for entity extraction + sentiment
-- **TTS**: ~300-600 ms for summary synthesis
-- **Total**: ~2-3 seconds end-to-end (on F0 tier)
-
-## 🧪 Testing (Optional)
+## 🧪 Testing
 
 ```bash
 # Run all tests
@@ -534,22 +460,3 @@ curl http://localhost:8000/health
 | **Telemetry** | OpenTelemetry SDK | Metrics, traces, spans |
 | **Monitoring** | Azure Application Insights | Distributed tracing, custom metrics, KQL |
 | **Database** | SQLite | Local persistence of statistics |
-
-## 📝 Submission Requirements
-
-- [x] GitHub repository with all code
-- [x] Lab report PDF (includes screenshots of KQL queries)
-- [x] 3-minute demo video
-- [x] `.env` file (not committed; add to `.gitignore`)
-- [x] All Azure resources provisioned with F0 tier
-- [x] Telemetry working and visible in Azure Portal
-- [x] Local development working (`http://localhost:8000`)
-- [x] Azure Web App deployment working
-
-## 📄 License
-
-Educational use (CSC 391 / CSC 691)
-
----
-
-**Built with ❤️ for Azure AI Speech Assignment**

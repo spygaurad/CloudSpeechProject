@@ -16,6 +16,8 @@ SUPPORTED_TTS_VOICES = {
     "en-US-JennyNeural": "formal",
     "en-US-GuyNeural": "casual",
     "en-US-AriaNeural": "energetic",
+    "en-US-AndrewMultilingualNeural": "multilingual",
+    "en-US-AvaNeural": "pleasant",
 }
 
 FULLY_SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".opus"}
