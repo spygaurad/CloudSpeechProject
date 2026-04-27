@@ -2,6 +2,10 @@
 
 A production-grade voice-powered memo analyzer built with Azure AI services. Record or upload audio, transcribe with Azure Speech, analyze with Azure Language, synthesize summaries with Text-to-Speech, and monitor everything with Azure Application Insights telemetry.
 
+
+https://github.com/user-attachments/assets/3393e3f9-50fa-4fc9-b1ec-34caff2bebfc
+
+
 ## 🏗️ Architecture
 
 ```
